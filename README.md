@@ -92,3 +92,70 @@ keeps no state between requests and talks to no external systems.
 - `timeout_no_solution`: budget spent before any complete plan was found;
   this does **not** mean the instance is infeasible.
 - `canceled`: the client canceled the request mid-search.
+## Minimal-perturbation rescheduling
+
+`POST /reschedule` replans after a mid-shift equipment outage while disturbing
+already-communicated start times as little as possible. It is stateless: every
+request carries the full original problem, the full original schedule, and the
+current minute.
+
+Request body = the `/schedule` problem fields plus:
+
+```json
+{
+  "original_schedule": [
+    {"id": "A", "equipment": "E1", "start": 0, "end": 60},
+    {"id": "B", "equipment": "E1", "start": 60, "end": 90}
+  ],
+  "now_minute": 50,
+  "new_unavailable": [{"equipment": "E1", "start": 60, "end": 100}],
+  "locked_job_ids": ["B"]
+}
+```
+
+- `original_schedule`: one assignment per job, exactly once. It must be a
+  feasible plan for the embedded problem; violations are rejected with a
+  field-located `400` (e.g. `original_schedule[1].start`).
+- `now_minute` (T): within `[0, horizon_minutes]`. Jobs with `end <= T` are
+  completed; jobs with `start < T < end` are in progress. Both keep their
+  original times and keep occupying equipment and crew. Jobs starting at or
+  after T are not started and may be moved, but never earlier than T.
+- `new_unavailable`: extra half-open blackouts, merged with the original ones.
+  Each must satisfy `now_minute <= start < end <= horizon_minutes`.
+- `locked_job_ids`: optional. Only not-started jobs may be locked; a locked
+  job keeps its original start/end. If a frozen or locked placement collides
+  with a new blackout, the response reports `infeasible` with a `reason`
+  instead of silently moving it.
+
+The solver minimizes, in strict lexicographic order:
+
+1. number of not-started jobs whose start time changes,
+2. sum of absolute start-time shifts,
+3. overall makespan,
+4. the ID-sorted start sequence (final tie-break).
+
+Response:
+
+```json
+{
+  "status": "optimal",
+  "makespan_minutes": 130,
+  "schedule": [
+    {"id": "A", "equipment": "E1", "start": 0, "end": 60},
+    {"id": "B", "equipment": "E1", "start": 100, "end": 130}
+  ],
+  "changes": [
+    {"id": "A", "equipment": "E1", "original_start": 0, "original_end": 60,
+     "new_start": 0, "new_end": 60, "start_delta": 0},
+    {"id": "B", "equipment": "E1", "original_start": 60, "original_end": 90,
+     "new_start": 100, "new_end": 130, "start_delta": 40}
+  ],
+  "metrics": {"changed_jobs": 1, "total_start_shift_minutes": 40, "makespan_minutes": 130}
+}
+```
+
+`status` uses the same vocabulary as `/schedule`: `optimal`, `infeasible`,
+`timeout_feasible` (budget spent, best complete plan so far returned),
+`timeout_no_solution` (budget spent before any complete plan), and `canceled`
+(client disconnected). The millisecond budget and request cancellation behave
+exactly as in `/schedule`, and requests are fully independent.

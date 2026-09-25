@@ -17,6 +17,7 @@ func NewRouter() http.Handler {
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	router.Post("/schedule", handleSchedule)
+	router.Post("/reschedule", handleReschedule)
 	return router
 }
 
@@ -43,6 +44,31 @@ func handleSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	// The request context cancels the search if the client goes away.
 	res := scheduler.Solve(r.Context(), &req)
+	writeJSON(w, http.StatusOK, res)
+}
+
+func handleReschedule(w http.ResponseWriter, r *http.Request) {
+	var req scheduler.RescheduleRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]string{"field": "body", "message": "invalid JSON: " + err.Error()},
+		})
+		return
+	}
+	if err := scheduler.ValidateReschedule(&req); err != nil {
+		var fe *scheduler.FieldError
+		if errors.As(err, &fe) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": fe})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]string{"field": "body", "message": err.Error()},
+		})
+		return
+	}
+	res := scheduler.Reschedule(r.Context(), &req)
 	writeJSON(w, http.StatusOK, res)
 }
 
